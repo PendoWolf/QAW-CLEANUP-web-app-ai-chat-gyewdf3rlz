@@ -1,11 +1,16 @@
 import { useState, type FormEvent } from "react";
+import { trackEvent } from "../analytics/pendo";
 import { sendAssistantMessage, type ChatMessage } from "../api/assistant";
+import { ApiError } from "../api/client";
 
 const SUGGESTED_PROMPTS = [
   "Suggest a 3-day itinerary for my next trip",
   "What should I pack for a week in Iceland?",
   "Find a cheaper alternative to Paris in spring",
 ];
+
+/** Where a prompt came from: typed in the message box or picked from the suggested prompts. */
+type PromptSource = "typed" | "suggested";
 
 function newConversationId(): string {
   return crypto.randomUUID();
@@ -23,7 +28,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const send = async (text: string) => {
+  const send = async (text: string, promptSource: PromptSource) => {
     const prompt = text.trim();
     if (prompt === "" || thinking) return;
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: prompt };
@@ -32,10 +37,32 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
     setDraft("");
     setError(null);
     setThinking(true);
+    // Shared details for assistant_reply_received, sent once the request settles.
+    const replyDetails = {
+      conversationId,
+      promptSource,
+      messageCount: conversation.length,
+      turnNumber: conversation.filter((message) => message.role === "user").length,
+      promptLength: prompt.length,
+    };
+    const startedAt = performance.now();
     try {
       const reply = await sendAssistantMessage(conversationId, conversation);
+      trackEvent("assistant_reply_received", {
+        ...replyDetails,
+        succeeded: true,
+        replyLength: reply.message.content.length,
+        responseTimeMs: Math.round(performance.now() - startedAt),
+      });
       setMessages((current) => [...current, reply.message]);
     } catch (e) {
+      trackEvent("assistant_reply_received", {
+        ...replyDetails,
+        succeeded: false,
+        // The API's HTTP status, or 0 when the request got no response.
+        errorStatus: e instanceof ApiError ? e.status : 0,
+        responseTimeMs: Math.round(performance.now() - startedAt),
+      });
       setError((e as Error).message);
     } finally {
       setThinking(false);
@@ -44,7 +71,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    void send(draft);
+    void send(draft, "typed");
   };
 
   const startNewChat = () => {
@@ -73,7 +100,12 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
             Ask me anything about planning a trip.
             <div className="suggestions">
               {SUGGESTED_PROMPTS.map((prompt) => (
-                <button key={prompt} type="button" className="secondary" onClick={() => void send(prompt)}>
+                <button
+                  key={prompt}
+                  type="button"
+                  className="secondary"
+                  onClick={() => void send(prompt, "suggested")}
+                >
                   {prompt}
                 </button>
               ))}
