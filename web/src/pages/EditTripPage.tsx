@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { trackEvent, tripLengthDays } from "../analytics/pendo";
 import { tripsApi, type NewTrip, type Trip } from "../api/trips";
 import { TripForm } from "../components/TripForm";
 
@@ -21,6 +22,21 @@ export function EditTripPage() {
     try {
       setError(null);
       await tripsApi.update(tripId, changes);
+      // Records a confirmed save and which fields it changed, compared to the trip as loaded.
+      const changedFields = trip
+        ? (["destination", "startDate", "endDate", "travelers"] as const).filter(
+            (field) => trip[field] !== changes[field],
+          )
+        : [];
+      trackEvent("trip_updated", {
+        tripId,
+        changedFields: [...changedFields],
+        destinationChanged: changedFields.includes("destination"),
+        datesChanged: changedFields.includes("startDate") || changedFields.includes("endDate"),
+        travelersChanged: changedFields.includes("travelers"),
+        travelers: changes.travelers,
+        tripLengthDays: tripLengthDays(changes.startDate, changes.endDate),
+      });
       navigate("/trips");
     } catch (e) {
       setError((e as Error).message);
